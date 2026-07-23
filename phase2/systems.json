@@ -1,0 +1,42 @@
+{
+  "radar": {
+    "btn": 1
+  },
+  "eos": {
+    "btn": 2
+  },
+  "lock": {
+    "btn": 3
+  },
+  "unlock": {
+    "btn": 4
+  },
+  "wpn": {
+    "btn": 5
+  },
+  "fire": {
+    "btn": 6
+  },
+  "dispense": {
+    "btn": 7
+  },
+  "airbrake": {
+    "btn": 8
+  },
+  "slew_up": {
+    "btn": 9,
+    "hold": true
+  },
+  "slew_down": {
+    "btn": 10,
+    "hold": true
+  },
+  "slew_left": {
+    "btn": 11,
+    "hold": true
+  },
+  "slew_right": {
+    "btn": 12,
+    "hold": true
+  }
+}

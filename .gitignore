@@ -1,0 +1,7 @@
+rag_docs/
+chroma_db/
+telemetry.jsonl
+__pycache__/
+*.pyc
+logs/
+*.log
