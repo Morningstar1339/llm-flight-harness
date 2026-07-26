@@ -520,10 +520,16 @@ Deterministic, so it is testable.
   array of any length. Every element is still validated and gated individually,
   so the risk is a long plan, not an ungated one. Enforce in `parse_commands` if
   it ever matters.
-- **`ClaudeAgentSDKClient` has never made a real call.** It is constructed and
-  argument-checked in tests, and the SDK's schema handling was verified against
-  the installed package source, but no live decision has been made. See
-  FLIGHT_TEST_PLAN.md card GT-02.
+- ~~**`ClaudeAgentSDKClient` has never made a real call.**~~ **Closed
+  2026-07-25** — GT-02 passed with no prompt changes. See the RESULT block on
+  that card.
+- **The `run()` loop's cadence is a gap, not a period.** `AgentPilot.run()`
+  waits `cadence_s` *after* each decision returns, so with the ~25 s decision
+  latency measured in GT-02 the effective period is ~33 s against CLAUDE.md's
+  ~8 s intent. Left as-is rather than silently changed: the fix could be a
+  lower `effort`, a bigger `cadence_s`, or `wait(cadence - elapsed)`, and which
+  one is right depends on how the model actually behaves in the air. FT-08
+  decides.
 - **No rate or cost ceiling on the agent loop.** `agent run` with no cycle count
   runs until revoked. `max_budget_usd` exists in `ClaudeAgentOptions` and is not
   wired up.

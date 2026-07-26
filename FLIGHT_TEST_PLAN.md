@@ -69,6 +69,35 @@ repeated steps. The snapshot fits comfortably in a screen or two.
 **Note.** This card is the first time this code path has ever run. Budget an
 hour and expect to iterate on the system prompt.
 
+### RESULT — 2026-07-25, PASS (no prompt changes)
+
+Run on the mock model, `claude-opus-5`, plan auth, `ANTHROPIC_API_KEY` confirmed
+unset in process/user/machine scope. One probe call plus the full card
+(4 × `agent step`). All four criteria met; the system prompt was not modified.
+
+Decisions: `FLY hdg 90 alt 28000 mach 0.85`, then `HOLD` × 3 — it recognised
+its own setpoints were already commanded and stopped churning them.
+
+Observations for later cards:
+
+- **Latency ≈ 25 s per decision** at default effort, against a `cadence_s`
+  default of 8. `AgentPilot.run()` waits `cadence_s` *after* each decision
+  returns, so the effective period is latency + cadence ≈ 33 s, not 8. Decide
+  in FT-08 whether to lower `effort`/`max_turns`, raise `cadence_s` to match
+  reality, or make the loop period-based (`wait(cadence - elapsed)`).
+- **The model fences its JSON in ` ```json ` every single time.** The
+  fence-stripping in `extract_json` is load-bearing on the live path, not an
+  edge case — do not "simplify" it.
+- **It called `search_manual` unprompted on the very first decision**, with no
+  contacts and nothing urgent. Good, but it means GT-03 is now the priority
+  card: in the probe it reported "Manual had no passage on patrol altitude"
+  (honest), and in the card run it asserted "Manual doctrine favours
+  high-altitude BVR". Verify the second one is cited, not paraphrased from
+  prior knowledge.
+- **`intent` strings run 2–3 sentences**, much longer than anything the mock
+  produced. `agent log` lines are wide. Cosmetic, but worth a look if the
+  console gets cramped in flight.
+
 ---
 
 ## GT-03 — Model calls the manual tool
