@@ -527,12 +527,21 @@ Deterministic, so it is testable.
   in direction, silent in character. Unfixed and undecided — the options are to
   keep first-value-wins but *report* trailing content as an error, or to decode
   repeatedly and concatenate. Measured, not yet chosen.
-- **The model asserts doctrine the manual does not contain.** GT-03 measured 4
-  uncited doctrine claims against 0 grounded and 2 hedged. Root cause is corpus
-  coverage — the indexed 32-page operator's guide has no employment-range
-  content, so `search_manual` correctly returns nothing and the model fills the
-  silence anyway. Not an agent-layer bug; the fix is some combination of a
-  better corpus and a harder prompt rule, and it is deliberately undecided.
+- **The model asserts doctrine the manual does not contain.** GT-03 measured
+  (a)=0 / (b)=4 / (c)=2, and a second independent run reproduced those counts
+  **exactly** on the same scenarios. Root cause is corpus coverage — the indexed
+  32-page operator's guide has no employment-range content, so `search_manual`
+  correctly returns nothing and the model fills the silence anyway. Pooling five
+  samples of the shot-request scenario, **2 of 5 FOX requests carried an uncited
+  envelope justification**, 1 of 5 hedged correctly, 2 of 5 were neutral
+  readback. Not an agent-layer bug; the fix is some combination of a better
+  corpus, a harder prompt rule, and possibly a mechanical one (e.g. refuse a FOX
+  whose intent makes a range claim unsupported by a tool result that turn).
+  Deliberately undecided — measured, not yet chosen.
+- **Retrieval is very sensitive to query phrasing.** Run 1's queries hit p.11
+  and p.22; run 2's 14 calls over the same five scenarios returned nothing at
+  all. Same corpus, same scenarios. Before tuning the prompt, it is worth
+  knowing whether the corpus or the embedding is the weaker link.
 - ~~**`ClaudeAgentSDKClient` has never made a real call.**~~ **Closed
   2026-07-25** — GT-02 passed with no prompt changes. See the RESULT block on
   that card.
