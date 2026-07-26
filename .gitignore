@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 logs/
 *.log
+main_old_0720.py
