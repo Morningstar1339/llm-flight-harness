@@ -204,6 +204,51 @@ def test_extract_json_returns_error_not_exception():
     assert value is None and err
 
 
+# ---- trailing-JSON drop, observed live in GT-03 run 1 --------------------
+GT03_DOUBLE = (
+    '{"command": "LOCK", "args": {"target_id": 1}, "intent": "designate"}\n'
+    '[{"command": "LOCK", "args": {"target_id": 1}, "intent": "designate"}, '
+    '{"command": "FOX", "args": {"target_id": 1}, "intent": "request shot"}, '
+    '{"command": "HOLD", "args": {}, "intent": "hold for authorization"}]')
+
+
+def test_a_second_json_value_is_an_error_not_a_silent_drop():
+    """GT-03 run 1: the model emitted an object then an array, raw_decode kept
+    the object, and a FOX and a HOLD it believed it had issued vanished with
+    no error. Two plans means we cannot know which was meant — fly neither."""
+    cmds, errors = parse_commands(GT03_DOUBLE)
+    assert cmds == []
+    assert errors and "more than one JSON value" in errors[0]
+
+
+def test_the_dropped_commands_are_named_in_no_uncertain_terms():
+    _, err = extract_json(GT03_DOUBLE)
+    assert "silently dropping" in err and "exactly one" in err
+
+
+@pytest.mark.parametrize("text", [
+    'Thinking about it...\n{"command": "HOLD", "intent": "x"}\nDone.',
+    '{"command": "HOLD", "intent": "x"}\nThat should hold us steady.',
+    '{"command": "HOLD", "intent": "x"}   ',
+])
+def test_trailing_prose_is_still_fine(text):
+    """Only a decodable second value is an error. Prose is not a plan."""
+    cmds, errors = parse_commands(text)
+    assert not errors and [c.name for c in cmds] == ["HOLD"]
+
+
+def test_two_arrays_are_also_refused():
+    cmds, errors = parse_commands(
+        '[{"command":"HOLD","intent":"a"}]\n[{"command":"RADAR","intent":"b"}]')
+    assert cmds == [] and "more than one JSON value" in errors[0]
+
+
+def test_a_brace_inside_prose_is_not_a_second_value():
+    cmds, errors = parse_commands(
+        '{"command": "HOLD", "intent": "x"}\nSee {the manual} for details.')
+    assert not errors and [c.name for c in cmds] == ["HOLD"]
+
+
 # ================================================================ snapshot
 def test_snapshot_carries_what_the_model_needs(d):
     engage(d)
@@ -394,9 +439,23 @@ def test_authorized_agent_fire_with_lock_is_released(d):
     active(d)
     inject(d, contacts=[contact(3)], locked=[{"id": 3}])
     d.pilot.authorize_fire(3)
-    res = d.pilot.dispatch(cmd("FOX", {"target_id": 3}, "in range, locked"))
+    # Intent is pure snapshot readback, so the cite-or-label gate has no claim
+    # to police. See test_fox_gate.py for the gate's own cases.
+    res = d.pilot.dispatch(cmd("FOX", {"target_id": 3},
+                               "target 3 locked, 20 nm, hot — requesting release"))
     assert res.ok and "release commanded" in res.detail
     assert button_pressed(d.out, FIRE_BTN)
+
+
+def test_the_old_in_range_phrasing_is_now_gated(d):
+    """Behaviour change: 'in range' is an uncited employment claim. It used to
+    pass; since the cite-or-label gate it does not."""
+    active(d)
+    inject(d, contacts=[contact(3)], locked=[{"id": 3}])
+    d.pilot.authorize_fire(3)
+    res = d.pilot.dispatch(cmd("FOX", {"target_id": 3}, "in range, locked"))
+    assert not res.ok and "FOX REFUSED" in res.detail
+    assert d.pilot.fire_auth.consumed_at is None
 
 
 def test_authorization_is_single_use(d):

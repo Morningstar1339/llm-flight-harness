@@ -136,6 +136,20 @@ class ToolRegistry:
     def __init__(self):
         self._tools: dict[str, ToolSpec] = {}
         self._lock = threading.Lock()
+        self._transcript: list[ToolResult] = []
+
+    # ---- per-decision transcript -----------------------------------------
+    # The FOX cite-or-label gate has to know what the manual actually returned
+    # during the decision it is gating. Every tool call funnels through
+    # `call`, so recording here is the one place that sees all of them,
+    # including the ones the model makes from inside the SDK's own loop.
+    def begin_turn(self) -> None:
+        with self._lock:
+            self._transcript = []
+
+    def transcript(self) -> list:
+        with self._lock:
+            return list(self._transcript)
 
     def register(self, spec: ToolSpec) -> ToolSpec:
         with self._lock:
@@ -174,6 +188,12 @@ class ToolRegistry:
 
     def call(self, name: str, arguments: dict | None = None) -> ToolResult:
         """Invoke a tool. Never raises — see rule 1 in the module docstring."""
+        res = self._call(name, arguments)
+        with self._lock:
+            self._transcript.append(res)
+        return res
+
+    def _call(self, name: str, arguments: dict | None = None) -> ToolResult:
         arguments = dict(arguments or {})
         spec = self.get(name)
         if spec is None:

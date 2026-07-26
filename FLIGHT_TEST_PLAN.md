@@ -278,6 +278,63 @@ claims on a FOX are the actual hazard.
 - **No malformed output at all** in run 2. One decision (S5) omitted the `args`
   key entirely; the validator's default handled it correctly.
 
+### RESULT — run 3, 2026-07-26: gate holds; two corrections to the record
+
+First run with the FOX cite-or-label gate and the corrected parser. Same eight
+decisions. **3 FOX requests, 3 passed, 0 refused** — 2 labelled as the model's
+own judgement, 1 cited. **Zero uncited claims**, against 2 of 5 before the gate.
+Zero parse errors.
+
+The two labelled requests are exactly the target behaviour:
+
+> `"REQUEST ONLY, your call: 8 nm, essentially head-on (az -2), co-altitude +500 ft, M1.2 vs my M0.85 so closure is very high and the window is short. Manual search returned no employment-range doctrine, so I am asserting no envelope - this is geometry plus my own judgement, not a cited rule."`
+
+#### CORRECTION 1 — the manual *does* contain employment ranges
+
+Runs 1 and 2 concluded "the indexed manual contains no missile employment-range
+doctrine at all." **That was wrong.** It is on pages 17–19:
+
+    p.17  RADAR GUIDED MISSILES — semi-active, must be guided to impact
+    p.18  R-27 ET  effective range vs manoeuvring target (head on): 15-18 Km
+          R-27 T   effective range vs manoeuvring target (head on): 10-15 Km
+    p.19  R-73     effective range vs manoeuvring target (head on): 05-07 Km
+
+Runs 1 and 2 missed it entirely through query phrasing; run 3's queries found
+it. The earlier conclusion was an artifact of two samples, and it had been
+written into `SYSTEM_PROMPT` as fact — actively telling the model not to look.
+Removed.
+
+#### CORRECTION 2 — the gate passed a materially wrong citation
+
+S4-r2's FOX passed as **CITED**:
+
+> `"Per p.17 the R-27ER effective range against a manoeuvring head-on target is 15-18 km, so we are at the near edge of that band and well inside it."`
+
+Verified against the corpus: **15-18 km is the R-27ET — the *infrared* missile —
+and it is printed on p.18, not p.17.** The retrieved p.17 chunk is the section
+heading ("The effective ranges of the 2 radar guided missiles are as follows")
+with the actual radar-missile numbers cut off at the chunk boundary. The model
+saw that heading plus the p.18 IR table and merged them, attributing the IR
+figure to the radar weapon.
+
+This matters tactically, not just bibliographically: the manual is explicit that
+semi-active radar missiles must be guided to impact while IR is fire-and-forget.
+Getting the weapon wrong gets the post-launch obligation wrong.
+
+**The gate cannot catch this by design.** It verifies that the intent cites a
+page the turn actually returned. It does not verify that the page *says what the
+model claims*. Provenance, not entailment. A fabricated or conflated citation
+that names a real returned page passes.
+
+That is a limit worth knowing before FT-06, not a reason to abandon the gate:
+uncited assertion went 2-in-5 → 0-in-3, and the two labelled requests are
+honest. But "CITED" in the log means "named a page we fetched", and should be
+read that way.
+
+**Not fixed.** Options, all with real costs: chunk the corpus so a heading never
+separates from its table; require the cited page's text to contain the quoted
+number; or have a second model call check entailment. Left for a decision.
+
 ---
 
 ## GT-04 — vJoy neutrality on the bench

@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import threading
 import time
 from collections import deque
@@ -221,6 +222,127 @@ class Command:
         return f"{self.name}{(' ' + a) if a else ''}"
 
 
+# =================================================== FOX cite-or-label gate
+# GT-03 measured, over two runs: 0 doctrine claims grounded in a manual
+# passage, 4 asserted without citation, 2 honestly hedged. Pooling five
+# samples of the shot scenario, 2 of 5 FOX requests justified themselves with
+# an employment-envelope claim the manual had, that same turn, explicitly
+# declined to support ("well inside employment envelope", "this is the shot
+# window"). The human reads that intent when deciding whether to authorize, so
+# an invented envelope is not a cosmetic problem -- it is bad evidence put in
+# front of the person holding the trigger.
+#
+# The contract is CITE OR LABEL, not silence:
+#   * assert doctrine and cite the page search_manual returned this turn, or
+#   * say plainly that the reasoning is your own judgement, or
+#   * do not make the claim.
+# Any of those three passes. Only an unsupported assertion dressed as doctrine
+# is refused.
+#
+# FALSE POSITIVES ON HONEST HEDGES: the hedges we measured all contain
+# claim-flavoured vocabulary -- "Manual returned no doctrine on employment
+# range, so this is my judgement, not a cited rule" trips every keyword a
+# naive detector would use. The resolution is that a hedge IS a label: it
+# self-identifies as uncited. So the detector never has to tell a hedge from a
+# claim. It asks two independent questions -- is there a claim, and is there a
+# label -- and a hedge answers yes to both, which passes. Every hedge observed
+# in GT-03 runs 1 and 2 is pinned verbatim in the tests.
+
+_CLAIM_PATTERNS = [
+    r"\b(employment|launch|weapon'?s?|missile|firing|shot)\s+"
+    r"(envelope|range|window|parameters|arc)\b",
+    r"\b(inside|within|in)\s+(?:\w+\s+){0,3}(envelope|wez|shot\s+window|"
+    r"launch\s+window)\b",
+    r"\bwell\s+(inside|within|beyond|outside)\b",
+    r"\bshot\s+window\b",
+    r"\b(min|max|minimum|maximum)\s+(range|launch|abort)\b",
+    r"\br-?27\w*\s+(range|envelope|shot)\b",
+    r"\bdoctrine\b",
+    r"\bf-?pole\b",
+    r"\bgimbal\b",
+    r"\bno\s+shot\s+at\b",
+    r"\b(in|within|inside|outside|out\s+of)\s+range\b",
+    r"\b(within|inside|outside|beyond|under|over|by)\s*~?\s*\d+(\.\d+)?\s*"
+    r"(nm|nmi|nautical|miles|km|kft|ft|kts?|knots)\b",
+]
+
+# Explicit self-attribution. Any of these means the model is telling the human
+# "this is me, not the book", which is exactly what the contract asks for.
+_LABEL_PATTERNS = [
+    r"\bmy\s+(own\s+)?(judge?ment|assessment|estimate|read|call|opinion)\b",
+    r"\b(judge?ment|assessment)\s+call\b",
+    r"\bnot\s+(a\s+)?cited\b",
+    r"\bnot\s+cited\b",
+    r"\buncited\b",
+    r"\bnot\s+(manual\s+)?doctrine\b",
+    r"\bmanual\s+(search\s+)?(returned|gives|give|has|had|found|provides|"
+    r"offers|contains)\s+(me\s+)?no\b",
+    r"\bno\s+(relevant\s+)?(manual|doctrine|passage|citation)\b",
+    r"\bwithout\s+(manual|doctrine|citation)\s+support\b",
+    r"\bnot\s+(from|in)\s+the\s+manual\b",
+]
+
+_CITATION_RE = re.compile(r"\bp\.\s*(\d+)")
+_TOOL_REFUSAL = "MANUAL: no relevant passage found"
+
+
+def detect_doctrine_claim(intent: str) -> str | None:
+    """Return the matched phrase if `intent` asserts doctrine, else None."""
+    if not intent:
+        return None
+    for pat in _CLAIM_PATTERNS:
+        m = re.search(pat, intent, re.IGNORECASE)
+        if m:
+            return m.group(0)
+    return None
+
+
+def has_judgment_label(intent: str) -> bool:
+    """True if `intent` explicitly attributes the reasoning to the model."""
+    if not intent:
+        return False
+    return any(re.search(p, intent, re.IGNORECASE) for p in _LABEL_PATTERNS)
+
+
+def citations_in(text: str) -> set:
+    """Page references (`p.11`) mentioned in a piece of text."""
+    return {m.group(1) for m in _CITATION_RE.finditer(text or "")}
+
+
+def turn_citations(transcript=()) -> set:
+    """Page references search_manual actually returned this turn.
+
+    A refusal ("no relevant passage") and an errored call cite nothing.
+    """
+    out = set()
+    for res in transcript or ():
+        text = getattr(res, "text", str(res))
+        if not getattr(res, "ok", True) or _TOOL_REFUSAL in text:
+            continue
+        out |= citations_in(text)
+    return out
+
+
+def check_cite_or_label(intent: str, transcript=()) -> str | None:
+    """None if a FOX intent satisfies the contract; else why it does not."""
+    claim = detect_doctrine_claim(intent)
+    if claim is None:
+        return None                      # no claim to support (see DECISIONS)
+    if has_judgment_label(intent):
+        return None                      # labelled as the model's own call
+    available = turn_citations(transcript)
+    if citations_in(intent) & available:
+        return None                      # cited a page returned this turn
+    if available:
+        return (f"the intent asserts doctrine ({claim!r}) without citing it. "
+                f"search_manual returned p.{', p.'.join(sorted(available))} "
+                f"this turn — cite the page it came from, or say plainly that "
+                f"the reasoning is your own judgement.")
+    return (f"the intent asserts doctrine ({claim!r}) but search_manual "
+            f"returned nothing citable this turn. Either label the reasoning "
+            f"as your own judgement, or drop the claim.")
+
+
 @dataclass
 class CommandResult:
     command: str
@@ -256,9 +378,27 @@ def extract_json(text: str):
     if start < 0:
         return None, "no JSON object or array in response"
     try:
-        value, _ = json.JSONDecoder().raw_decode(s[start:])
+        value, end = json.JSONDecoder().raw_decode(s[start:])
     except json.JSONDecodeError as e:
         return None, f"malformed JSON: {e}"
+    # A SECOND JSON value in the same response is refused outright. Observed
+    # live in GT-03: the model emitted a bare object followed by an array, and
+    # raw_decode silently kept the object -- a FOX and a HOLD it believed it
+    # had issued never reached the human, with no error raised. When two plans
+    # arrive we cannot know which was meant, so neither flies. Trailing PROSE
+    # is still fine; only a decodable second value is an error.
+    rest = s[start + end:]
+    nxt = min([i for i in (rest.find("{"), rest.find("[")) if i >= 0], default=-1)
+    if nxt >= 0:
+        try:
+            json.JSONDecoder().raw_decode(rest[nxt:])
+        except json.JSONDecodeError:
+            pass                    # a stray brace in prose, not a second plan
+        else:
+            return None, ("response contains more than one JSON value — "
+                          "refusing the whole response rather than silently "
+                          "dropping the rest. Send exactly one object, or one "
+                          "array of objects.")
     return value, None
 
 
@@ -431,6 +571,35 @@ RULES
   an authorization for that exact target at the console, and requires a lock.
   If you believe a shot is available, issue FOX with a clear intent — the
   refusal message tells the human what you want.
+
+- CITE OR LABEL, on FOX especially. The human reads your `intent` when deciding
+  whether to authorize a shot, so it must not put invented doctrine in front of
+  them. If your intent asserts doctrine — an employment envelope, a launch
+  window, a range or a threshold — then ONE of these must be true:
+    * you cite the page search_manual returned to you this turn, e.g.
+      "per p.22 ...". Cite only what you actually got back this turn.
+    * you say plainly that it is your own judgement, e.g. "manual returned no
+      employment-range doctrine, so this is my judgement, not a cited rule".
+    * you drop the claim and describe the geometry instead: "8 nm, head-on,
+      M1.2 closing, RWR correlating" needs no citation — it is what the human
+      can see on their own display.
+  A FOX that asserts doctrine without citing it and without labelling it is
+  REFUSED, and the refusal names the phrase that tripped it. Saying "I do not
+  have doctrine for this" is always safe and is never held against you. Making
+  a number up is the only thing that is.
+
+- The manual DOES carry missile employment ranges, but they are per-weapon and
+  easy to conflate. The radar-guided R-27ER/R and the infrared R-27ET/T have
+  DIFFERENT ranges on DIFFERENT pages, and the semi-active radar missiles must
+  be guided to impact while the IR ones are fire-and-forget. If you quote a
+  range, quote it for the weapon you are actually shooting, and cite the page
+  that number is printed on — not the page of the section heading above it.
+  A citation that points at the wrong page or the wrong missile is worse than
+  no citation, because it looks checked.
+
+- If a query returns nothing, that is the tool working, not failing. Try
+  rephrasing once; if it still returns nothing, label your reasoning as your
+  own judgement. Do not fill the silence.
 - The human can revoke your authority at any instant with the word `manual`.
   That is normal and expected. Do not work around it.
 - You have a search_manual tool over the Su-27 tactics manual. Use it when
@@ -523,7 +692,8 @@ class AgentPilot:
         self.log.append(res)
         return res
 
-    def dispatch(self, cmd: Command, epoch: int | None = None) -> CommandResult:
+    def dispatch(self, cmd: Command, epoch: int | None = None,
+                 transcript=()) -> CommandResult:
         """Gate and execute one command. The gate and the action share a lock,
         so a revocation lands *between* commands, never inside one."""
         spec = COMMANDS[cmd.name]
@@ -537,11 +707,12 @@ class AgentPilot:
             if spec.needs_engaged and not self.d.engaged:
                 return self._refuse(cmd, "daemon is in MANUAL — the human has the jet")
             try:
-                return self._execute(cmd, spec)
+                return self._execute(cmd, spec, transcript)
             except Exception as e:      # a bad command must not kill the loop
                 return self._refuse(cmd, f"dispatch raised {type(e).__name__}: {e}")
 
-    def _execute(self, cmd: Command, spec: CommandSpec) -> CommandResult:
+    def _execute(self, cmd: Command, spec: CommandSpec,
+                 transcript=()) -> CommandResult:
         d, a = self.d, cmd.args
         s = d.tele.latest()
 
@@ -610,13 +781,24 @@ class AgentPilot:
             return self._accept(cmd, "lock hunt aborted, designator reset")
 
         if cmd.name == "FOX":
-            return self._fox(cmd, s)
+            return self._fox(cmd, s, transcript)
 
         return self._refuse(cmd, "no dispatch path — this is a harness bug")
 
-    def _fox(self, cmd: Command, s) -> CommandResult:
+    def _fox(self, cmd: Command, s, transcript=()) -> CommandResult:
         """Weapon release request. Ruling 4: the trigger is a human act."""
         tid = cmd.args["target_id"]
+
+        # Cite-or-label runs FIRST, before the authorization is even looked at.
+        # Two reasons: the model then gets the same feedback whether or not the
+        # human happened to have authorized, and refusing here cannot possibly
+        # consume an authorization -- it is unreachable from this branch.
+        bad = check_cite_or_label(cmd.intent, transcript)
+        if bad:
+            return self._refuse(
+                cmd, f"FOX REFUSED — {bad}\n"
+                     f'      intent as given: "{cmd.intent}"')
+
         auth = self.fire_auth
         if auth is None:
             return self._refuse(
@@ -632,16 +814,23 @@ class AgentPilot:
                      f"(locked: {locked_ids or 'nothing'})")
         auth.consumed_at = time.monotonic()
         self.d.sysx.execute("fire")
+        # A bare readback passes the gate (see DECISIONS.md), but say so, so a
+        # drift toward justification-free shot requests is visible in the log
+        # rather than looking like a clean pass.
+        bare = "" if detect_doctrine_claim(cmd.intent) else \
+               " [no doctrine justification offered]"
         return self._accept(cmd, f"FOX — release commanded on target {tid} under "
-                                 f"human authorization. R-27 is SARH: keep the lock.")
+                                 f"human authorization. R-27 is SARH: keep the "
+                                 f"lock.{bare}")
 
     # ------------------------------------------------------------- cycle --
-    def execute_plan(self, commands, epoch: int | None = None) -> list[CommandResult]:
+    def execute_plan(self, commands, epoch: int | None = None,
+                     transcript=()) -> list[CommandResult]:
         if epoch is None:
             epoch = self.epoch
         results = []
         for cmd in commands:
-            results.append(self.dispatch(cmd, epoch))
+            results.append(self.dispatch(cmd, epoch, transcript))
         return results
 
     def snapshot(self) -> str:
@@ -656,11 +845,16 @@ class AgentPilot:
                 return [], ["agent authority is off"]
             epoch = self._epoch
         snap = self.snapshot()
+        # Scope the tool transcript to this decision: the FOX gate must judge
+        # the intent against what the manual returned *this* turn, not what it
+        # returned three cycles ago in a different engagement.
+        self.registry.begin_turn()
         try:
             text = self.client.decide(snap)
         except Exception as e:
             self.last_error = f"{type(e).__name__}: {e}"
             return [], [f"model call failed: {self.last_error}"]
+        transcript = self.registry.transcript()
         commands, errors = parse_commands(text)
         for c in commands:
             for w in c.warnings:
@@ -670,7 +864,7 @@ class AgentPilot:
                                      c.intent) for c in commands]
             self.log.extend(results)
             return results, errors
-        return self.execute_plan(commands, epoch), errors
+        return self.execute_plan(commands, epoch, transcript), errors
 
     def run(self, cycles: int | None = None, cadence_s: float | None = None):
         """Background decision loop. Stops on revocation."""

@@ -499,7 +499,81 @@ current behaviour and would need deleting, which is the point.
 
 ---
 
-## 27. `DEFEND` beams the threat the short way round
+## 27. FOX cite-or-label gate: a bare readback passes
+
+**Decision.** A FOX whose `intent` asserts doctrine (an employment envelope, a
+launch window, a range, a threshold) is released only if it cites a page
+`search_manual` returned **this turn**, or explicitly labels the reasoning as
+the model's own judgement. A FOX whose intent makes **no** doctrine claim at all
+— pure snapshot readback, or nothing — **passes**, but the result line is
+tagged `[no doctrine justification offered]`.
+
+**Alternatives.** (a) Require a justification on every FOX. (b) Require a
+*citation* on every FOX. (c) Refuse any FOX making a claim, with no label
+escape.
+
+**Why pass.** The hazard this gate exists to stop is *bad evidence in front of
+the person holding the trigger*. A readback — "8 nm, head-on, M1.2 closing, RWR
+correlating" — is not evidence the human lacks; they are looking at the same
+snapshot. It cannot mislead them. An invented employment envelope can, and does:
+GT-03 measured 2 of 5 shot requests justifying themselves with one.
+
+(a) and (b) would make the gate a blanket refusal in disguise, which is
+explicitly not what was asked for, and (b) is unsatisfiable against a corpus
+that contains no employment-range doctrine at all — the model would be required
+to cite a page that does not exist. (c) removes the honest escape hatch and so
+*teaches the model to stay silent*, which costs us the debrief reasoning that
+is half the point of `intent`.
+
+**The residual risk, and why it is acceptable.** A model that learns the gate
+could strip justification to slide through. Two things make that unattractive:
+a bare request is *less* persuasive to the human who must authorize, so the
+incentive does not point at the hazard; and every such pass is tagged in the
+log, so the drift is countable rather than invisible. If the tag starts showing
+up on most shot requests, revisit — that is the signal, and it is now
+observable.
+
+**How to reverse.** In `_fox`, refuse when `detect_doctrine_claim` returns None
+to get (a). The tag is one line in the same function.
+
+---
+
+## 28. The claim detector avoids false positives because a hedge *is* a label
+
+**Decision.** Two independent checks — "does this assert doctrine?" and "does
+this label itself as the model's own judgement?" — and any labelled intent
+passes regardless of what it claims.
+
+**The problem this solves.** Every honest hedge the live model produced trips a
+claim detector, because hedges are *about* doctrine: *"Manual returned no
+doctrine on employment range, so this is my judgement, not a cited rule"*
+contains "doctrine", "employment range" and "judgement". A single-stage
+classifier trying to separate hedge from claim by vocabulary cannot work — the
+vocabulary is identical.
+
+**Why this works.** A hedge self-identifies. It answers *yes* to both questions,
+and yes-to-label wins. So the detector never has to make the hard distinction:
+it only has to notice that the model said "this is mine". The 6 hedges and 7
+uncited claims measured across GT-03 runs 1 and 2 are pinned **verbatim** in
+`test_fox_gate.py`, so a future tweak that starts flagging honest hedges, or
+stops catching what we actually saw, turns the suite red.
+
+**Known false-negative.** A model that writes the label without meaning it
+passes. That is a deliberate trade: the gate enforces *disclosure*, not
+sincerity, and disclosure is the thing the human actually needs in order to
+weigh the intent. Detecting insincerity is not something a regex can do, and
+pretending otherwise would be worse than being honest about the boundary.
+
+**Known false-positive, accepted.** "gimbal" is in the claim vocabulary, so a
+FOX reasoning about gimbal limits must cite or label. GT-03 showed gimbal claims
+are almost always on CRANK (ungated) rather than FOX, so the cost is near zero.
+
+**How to reverse.** `_CLAIM_PATTERNS` and `_LABEL_PATTERNS` in `agent.py` are
+plain lists of regexes; the tests tell you immediately what a change breaks.
+
+---
+
+## 29. `DEFEND` beams the threat the short way round
 
 **Decision.** With a bearing, `DEFEND` dispenses countermeasures and then notches
 to whichever of threat±90 is the smaller turn from the current heading.
@@ -520,13 +594,30 @@ Deterministic, so it is testable.
   array of any length. Every element is still validated and gated individually,
   so the risk is a long plan, not an ungated one. Enforce in `parse_commands` if
   it ever matters.
-- **`extract_json` silently keeps only the first JSON value in a response.**
-  Observed live in GT-03: the model emitted a bare object followed by an array;
-  `raw_decode` took the object and `parse_commands` returned no error, so a FOX
-  and a HOLD the model believed it had issued never reached the human. Fail-safe
-  in direction, silent in character. Unfixed and undecided — the options are to
-  keep first-value-wins but *report* trailing content as an error, or to decode
-  repeatedly and concatenate. Measured, not yet chosen.
+- ~~**`extract_json` silently keeps only the first JSON value.**~~ **Fixed
+  2026-07-26.** A second *decodable* JSON value now refuses the whole response
+  rather than dropping the remainder: when two plans arrive we cannot know
+  which was meant, so neither flies. Trailing prose is still tolerated — only a
+  decodable second value is an error. The GT-03 transcript that triggered this
+  is pinned verbatim in `test_agent.py`.
+- **The FOX gate checks provenance, not entailment.** It verifies the intent
+  cites a page `search_manual` returned this turn. It does **not** verify the
+  page says what the model claims. GT-03 run 3 passed a citation attributing
+  the R-27**ET** (infrared, p.18) range of 15-18 km to the R-27**ER** (radar)
+  and citing p.17 — a real returned page, the wrong weapon and the wrong page.
+  Tactically material: semi-actives must be guided to impact, IR is
+  fire-and-forget. Root cause is partly chunking — the p.17 chunk is a section
+  heading whose table was cut off at the boundary. Options: re-chunk so a
+  heading never separates from its table; require the quoted number to appear
+  in the cited page's text; or a second model call for entailment. Undecided.
+  Read "CITED" in the log as "named a page we fetched", nothing stronger.
+- **Two samples were not enough to characterise the corpus.** Runs 1 and 2
+  concluded the manual had no employment-range doctrine; run 3 found it on
+  p.17-19. The conclusion was an artifact of query phrasing, and it had been
+  written into `SYSTEM_PROMPT` as fact before being checked against the corpus
+  directly. Corrected. The lesson is cheap and worth keeping: verify a claim
+  about the *data* against the data, not against what the model failed to
+  retrieve.
 - **The model asserts doctrine the manual does not contain.** GT-03 measured
   (a)=0 / (b)=4 / (c)=2, and a second independent run reproduced those counts
   **exactly** on the same scenarios. Root cause is corpus coverage — the indexed
@@ -534,10 +625,10 @@ Deterministic, so it is testable.
   correctly returns nothing and the model fills the silence anyway. Pooling five
   samples of the shot-request scenario, **2 of 5 FOX requests carried an uncited
   envelope justification**, 1 of 5 hedged correctly, 2 of 5 were neutral
-  readback. Not an agent-layer bug; the fix is some combination of a better
-  corpus, a harder prompt rule, and possibly a mechanical one (e.g. refuse a FOX
-  whose intent makes a range claim unsupported by a tool result that turn).
-  Deliberately undecided — measured, not yet chosen.
+  readback. **Mechanically gated on FOX since 2026-07-26** — see §27 and §28.
+  The gate covers the shot request, which is where the hazard is; uncited
+  doctrine in a CRANK or PUMP intent is still possible and still only prose.
+  Corpus coverage and retrieval quality remain open.
 - **Retrieval is very sensitive to query phrasing.** Run 1's queries hit p.11
   and p.22; run 2's 14 calls over the same five scenarios returned nothing at
   all. Same corpus, same scenarios. Before tuning the prompt, it is worth
