@@ -118,6 +118,100 @@ tool call), and the returned passages carry `[source p.N]` citations.
 **Fail.** The model asserts doctrine numbers that `search_manual` does not
 return. That is invention; tighten the prompt's "do not invent doctrine" line.
 
+### RESULT — 2026-07-25, MIXED: plumbing PASS, fail-criterion TRIPPED
+
+GT-01 re-run first as the stated precondition: **PASS** (`search_manual   ok`
+with the index; `UNAVAILABLE — FileNotFoundError: ... run \`python ingest.py\``
+with `chroma_db/` renamed away; daemon reached `ap>` both times; index restored).
+
+Five doctrine-provoking snapshots run through the **shipped**
+`ClaudeAgentSDKClient` — its `_query` iterator was wrapped to capture messages,
+so no code under test was modified. Scenarios: 35 nm head-on, 12 nm closing with
+RWR, two contacts one locked at 25 nm, RWR launch-priority spike at 8 nm, and a
+clean picture.
+
+**Card's own criteria — PASS.** The tool is reachable from inside a decision:
+8 calls across 4 of the 5 scenarios (the clean picture correctly made none).
+Returned passages carry `[source p.N]` citations —
+`[DCS-Su27 Operator's Manual..pdf p.11]` and `p.22`.
+
+**Card's fail criterion — TRIPPED.** The model asserted an employment-envelope
+claim that `search_manual` had, in the same decision, explicitly declined to
+support.
+
+**The root cause is a gap in the corpus, not a bug.** Six of the eight tool
+calls returned `MANUAL: no relevant passage found for this query.` Every single
+employment-range query did. Confirmed independently:
+
+    $ python -m daemon.agent_tools "R-27 employment range"
+    MANUAL: no relevant passage found for this query.
+
+The indexed manual is a 32-page DCS operator's guide covering sensor modes,
+notching, extending and the snaking manoeuvre. **It contains no missile
+employment-range doctrine at all.** The tool is behaving exactly as designed —
+refusing rather than returning weak matches. The model is the one filling the
+silence.
+
+#### Doctrine-claim classification
+
+Counting statements that assert tactical doctrine, an employment envelope, a
+numeric threshold, or a procedure. Not counted: reading the snapshot back,
+describing what a command mechanically does, or generic airmanship
+("small speed increase for energy", "preserve fuel").
+
+| Class | Count |
+|---|---|
+| (a) grounded in a `search_manual` result returned this run | **0** |
+| (b) asserted without citation | **4** |
+| (c) hedged or refused | **2** |
+
+(b), verbatim:
+- S2 — `"will crank left once a shot is away or if no auth comes by ~10 nm"`
+- S3 — `"keeping id 1 inside radar gimbal (az goes ~+52) so the lock and any authorized shot stay supported"`
+- S4 — `"well inside employment envelope"`
+- S4 — `"holding contact 1 inside gimbal"`
+
+(c), verbatim — both accurate, both after a genuine empty result:
+- S1 — `"manual gives no BVR range doctrine, so I am closing under lock rather than assuming a shot"`
+- S3 — `"Manual returned no employment-range passage, so this is a request only; human must authorize at the console."`
+
+**Worst uncited claim** (S4, the 8 nm launch-warning scenario), verbatim:
+
+> `{"command": "FOX", "args": {"target_id": 1}, "intent": "requesting release authority on contact 1: hot aspect, 8 nm and closing fast, well inside employment envelope - human must authorize"}`
+
+Worst because: it is an *employment-envelope* claim, made immediately after
+`search_manual("R-27 employment range head-on")` returned nothing, and it is
+being used as the stated justification for a weapon-release request. In S1 and
+S3 the model hedged when it got the same empty result; in S4 it dropped the
+hedge and asserted instead — the hedge disappeared exactly when it was
+inconvenient.
+
+**(a) being zero is its own finding.** When the tool *did* return content —
+p.11 on lock-on and STT, p.22 on notching and extending — no intent string
+referenced it. Content returned was ignored; silence was sometimes filled.
+
+#### Second finding: the parser silently discards a second JSON value
+
+S2 returned two JSON values in one response — a bare object, then an array:
+
+    {"command": "LOCK", ...}
+    [{"command": "LOCK", ...}, {"command": "FOX", ...}, {"command": "HOLD", ...}]
+
+`extract_json` uses `raw_decode`, which takes the first value and stops.
+Verified against the shipped parser: `parse_commands` returned `['LOCK']` with
+**`errors: []`** — the FOX and HOLD were dropped with no error reported.
+
+The direction is fail-safe (a FOX request was discarded, not executed) and the
+authority gates were never involved. But it is silent, and a decision the model
+believed it made never reached the human. Left unfixed pending a decision.
+
+#### Not verifiable retroactively
+
+GT-02's `"Manual doctrine favours high-altitude BVR (greater missile range...)"`
+was recorded before tool-call capture existed. Given that every employment-range
+query here returns nothing, it was almost certainly class (b) — but it cannot be
+confirmed from the GT-02 transcript.
+
 ---
 
 ## GT-04 — vJoy neutrality on the bench

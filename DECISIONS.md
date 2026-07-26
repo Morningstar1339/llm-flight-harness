@@ -520,6 +520,19 @@ Deterministic, so it is testable.
   array of any length. Every element is still validated and gated individually,
   so the risk is a long plan, not an ungated one. Enforce in `parse_commands` if
   it ever matters.
+- **`extract_json` silently keeps only the first JSON value in a response.**
+  Observed live in GT-03: the model emitted a bare object followed by an array;
+  `raw_decode` took the object and `parse_commands` returned no error, so a FOX
+  and a HOLD the model believed it had issued never reached the human. Fail-safe
+  in direction, silent in character. Unfixed and undecided — the options are to
+  keep first-value-wins but *report* trailing content as an error, or to decode
+  repeatedly and concatenate. Measured, not yet chosen.
+- **The model asserts doctrine the manual does not contain.** GT-03 measured 4
+  uncited doctrine claims against 0 grounded and 2 hedged. Root cause is corpus
+  coverage — the indexed 32-page operator's guide has no employment-range
+  content, so `search_manual` correctly returns nothing and the model fills the
+  silence anyway. Not an agent-layer bug; the fix is some combination of a
+  better corpus and a harder prompt rule, and it is deliberately undecided.
 - ~~**`ClaudeAgentSDKClient` has never made a real call.**~~ **Closed
   2026-07-25** — GT-02 passed with no prompt changes. See the RESULT block on
   that card.
