@@ -18,6 +18,18 @@ REPL (aviation units in, SI internally):
     status                             one-line state + setpoints
     watch [n]                          print status every second (n secs, default 10)
     sys / btn <n> / contacts           list systems map / raw button pulse / radar picture\n    radar eos lock unlock wpn fire dispense airbrake\n    lock <id> / lockstat / lockabort   autonomous designator hunt onto a contact\n    slew <dir> [secs]                  manual slew (calibrate slew_rate_dps)\n                                       combat systems (fire has a lock interlock)\n    gains / set <gain> <value> / savegains
+
+  Phase 3 agent layer (strictly additive; `manual` revokes all of it instantly):
+    agent status | tools | log [n] | snapshot | prompt
+    agent advise                       agent decides, nothing is executed
+    agent fly                          agent commands execute (needs AUTO)
+    agent off                          revoke authority, stop the loop
+    agent client <sdk|none>            attach/detach the model adapter
+    agent step | run [cycles]          one decision cycle / background loop
+    authorize fire <id> [secs]         HUMAN act: permit ONE release on ONE
+                                       target. Single use, expiring. The agent
+                                       cannot fire without it.
+    deauthorize                        cancel an outstanding authorization
     quit
 """
 from __future__ import annotations
@@ -29,6 +41,8 @@ import sys
 import threading
 import time
 
+from .agent import SYSTEM_PROMPT, AgentPilot
+from .agent_tools import build_default_registry
 from .controllers import Autopilot, wrap_pi
 from .maneuvers import ManeuverManager
 from .output import make_output
@@ -66,6 +80,10 @@ class Daemon:
         self.out = make_output(mock)
         self.sysx = SystemsExecutor(self.out)
         self.lm = LockManager(self.sysx, self.tele, self.ap.g)
+        # Phase 3 agent layer. Starts with authority OFF and no model client:
+        # importing it changes nothing about how the daemon flies.
+        self.registry = build_default_registry()
+        self.pilot = AgentPilot(self, self.registry)
         self.engaged = False   # SAFETY: starts in MANUAL. Engaging is explicit.
         self._stop = threading.Event()
         self._last_seq = -1     # last telemetry seq we acted on
@@ -94,10 +112,7 @@ class Daemon:
             if self.engaged and not self.mock:
                 reason = envelope_violation(s)
                 if reason:
-                    self.engaged = False
-                    self.out.center()
-                    print(f"\n*** ENVELOPE GUARD: {reason} ***"
-                          f"\n*** AUTOPILOT DISENGAGED — YOUR JET. Recover, then 'auto'. ***")
+                    print(self.emergency_disengage(reason))
                     continue
             if self.engaged and (self.mock or s.fresh):
                 if not self.mock:
@@ -120,6 +135,19 @@ class Daemon:
             elif self.mock:
                 self._sim.step(0.0, 0.0, 0.5, dt)
             time.sleep(dt if self.mock else 0.002)
+
+    def emergency_disengage(self, reason: str) -> str:
+        """Abnormal exit from AUTO (envelope guard).
+
+        Agent authority dies with the autopilot: an emergency disengage that
+        left the agent live would have it issuing commands into a departed
+        jet with no inner loop underneath.
+        """
+        self.pilot.revoke(f"envelope guard: {reason}")
+        self.engaged = False
+        self.out.center()
+        return (f"\n*** ENVELOPE GUARD: {reason} ***"
+                f"\n*** AUTOPILOT DISENGAGED — YOUR JET. Recover, then 'auto'. ***")
 
     # ---------- flight recorder ----------
     def rec_start(self):
@@ -266,6 +294,11 @@ def repl(d: Daemon):
                 ok = d.mm.recommit(s)
                 print(d.status_line() if ok else "no commit reference stored yet")
             elif cmd == "manual":
+                # SAFETY WORD. Agent authority dies FIRST and unconditionally,
+                # so nothing the agent has in flight can slip through while we
+                # centre the stick. Everything below this line is the original
+                # Phase 2 MANUAL behaviour, unchanged.
+                print(d.pilot.revoke("manual safety word"))
                 d.engaged = False
                 d.out.center()
                 d.rec_stop()
@@ -350,6 +383,60 @@ def repl(d: Daemon):
                 d.sysx.hold(name); time.sleep(dur); d.sysx.release(name)
                 print(f"held {name} for {dur:.2f} s — measure degrees moved "
                       f"on the HUD, then: set slew_rate_dps <deg/sec>")
+            elif cmd == "agent":
+                sub = args[0].lower() if args else "status"
+                if sub == "status":
+                    print(d.pilot.status_line())
+                elif sub == "tools":
+                    print(d.registry.describe())
+                elif sub in ("off", "stop"):
+                    d.pilot.stop()
+                    print(d.pilot.revoke(f"console 'agent {sub}'"))
+                elif sub in ("advise", "advisory"):
+                    print(d.pilot.set_authority("advisory", "console"))
+                elif sub == "fly":
+                    print(d.pilot.set_authority("active", "console"))
+                elif sub == "snapshot":
+                    print(d.pilot.snapshot())
+                elif sub == "prompt":
+                    print(SYSTEM_PROMPT)
+                elif sub == "log":
+                    n = int(args[1]) if len(args) > 1 else 20
+                    for r in list(d.pilot.log)[-n:]:
+                        print(f"  {r}")
+                elif sub == "step":
+                    results, errors = d.pilot.step()
+                    for r in results:
+                        print(f"  {r}")
+                    for e in errors:
+                        print(f"  ! {e}")
+                    if not results and not errors:
+                        print("  (no commands)")
+                elif sub == "run":
+                    cycles = int(args[1]) if len(args) > 1 else None
+                    print(d.pilot.run(cycles))
+                elif sub == "client":
+                    which = args[1].lower() if len(args) > 1 else "sdk"
+                    if which == "none":
+                        d.pilot.client = None
+                        print("model client detached")
+                    elif which == "sdk":
+                        from .model_client import ClaudeAgentSDKClient
+                        d.pilot.client = ClaudeAgentSDKClient(d.registry, SYSTEM_PROMPT)
+                        print(f"model client: {d.pilot.client.name}")
+                    else:
+                        print("usage: agent client <sdk|none>")
+                else:
+                    print(f"unknown agent subcommand {sub!r}; try: status tools "
+                          f"advise fly off client step run log snapshot prompt")
+            elif cmd == "authorize":
+                if len(args) < 2 or args[0].lower() != "fire":
+                    print("usage: authorize fire <target_id> [seconds]")
+                else:
+                    ttl = float(args[2]) if len(args) > 2 else 120.0
+                    print(d.pilot.authorize_fire(int(args[1]), ttl))
+            elif cmd == "deauthorize":
+                print(d.pilot.deauthorize("console"))
             elif cmd in d.sysx.names():
                 d.sysx.execute(cmd)
                 print(f"{cmd} commanded")
