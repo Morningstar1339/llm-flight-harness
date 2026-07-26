@@ -33,8 +33,10 @@ the aircraft crashes.
   lock/unlock, weapons with fire interlock, countermeasures).
   Run with `python -m daemon.main` from `phase2/`. Starts in MANUAL;
   `auto` engages, `manual` is the safety word.
-- **Agent layer** — model-in-the-loop command interface, including an
-  autonomous lock-hunt routine (timed slew + verify + retry).
+- **Agent layer** — model-in-the-loop command interface: a tool registry,
+  a twelve-verb doctrine-level command schema, a three-state authority
+  model (off / advisory / active) with an instant human revocation word,
+  and an autonomous lock-hunt routine (timed slew + verify + retry).
 - **Retrieval tool** (`retrieval.py`) — RAG pipeline over the aircraft's
   tactics manual: documents chunked and embedded into a local Chroma
   vector store (`ingest.py`), exposed as an agent-callable
@@ -52,8 +54,13 @@ constraint rather than a retrofit:
 - **Positive exchange of controls** — explicit handoff protocol between
   human and automation, adopted after mid-engagement control blending
   caused a departure from controlled flight.
-- **Interlocked weapons commands** — fire commands gated behind an
-  explicit authorization interlock.
+- **Interlocked weapons commands** — the agent never fires autonomously.
+  It may request release; release additionally requires a per-engagement
+  authorization typed by the human at the console, which is single-use,
+  target-specific and expiring, on top of the existing lock interlock.
+- **Instant revocation** — one word at the console strips all agent
+  authority and restores manual control, including partway through a
+  multi-command plan.
 - **Flight-recorder telemetry logging** — every flight produces analyzable
   logs; the recorder is the primary debugging instrument.
 
@@ -75,10 +82,14 @@ flight.
 - Phase 1 — telemetry export: complete, combat-validated
 - Phase 2 — inner-loop autopilot and systems executor: complete and
   flight-accepted
-- Phase 3 — full model-in-the-loop agent flight: in progress; current
-  focus is autonomous target locking (agent-directed radar slew and
-  lock verification)
-- Manual-retrieval RAG tool: built; daemon integration pending
+- Phase 3 — full model-in-the-loop agent flight: agent layer built and
+  passing its offline suite; no live flight yet. Flight validation is
+  carded in `FLIGHT_TEST_PLAN.md`
+- Manual-retrieval RAG tool: built and wired into the daemon's tool
+  registry, callable by the agent mid-decision
+
+Design decisions taken along the way, with alternatives and how to
+reverse each, are recorded in `DECISIONS.md`.
 
 ## Requirements
 
