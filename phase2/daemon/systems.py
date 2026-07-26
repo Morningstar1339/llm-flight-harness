@@ -54,8 +54,19 @@ class SystemsExecutor:
         self.map_path = map_path
         self.map = dict(DEFAULT_MAP)
         if os.path.exists(map_path):
-            with open(map_path) as f:
-                self.map.update(json.load(f))   # user's file wins per command
+            try:
+                with open(map_path) as f:
+                    self.map.update(json.load(f))   # user's file wins per command
+            except (OSError, ValueError) as e:
+                # Deliberately fatal, just legible. Silently falling back to
+                # DEFAULT_MAP would quietly undo a rebinding: a `fire` the
+                # operator moved to button 15 would go back to pulsing 6.
+                raise RuntimeError(
+                    f"cannot read the systems map at {map_path}: "
+                    f"{type(e).__name__}: {e}\n"
+                    f"Fix or delete the file — refusing to boot on the default "
+                    f"bindings, because that would silently undo any rebinding "
+                    f"you have made.") from e
         try:
             with open(map_path, "w") as f:
                 json.dump(self.map, f, indent=2)  # persist merged map
