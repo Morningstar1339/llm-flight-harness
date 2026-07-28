@@ -648,3 +648,4 @@ Deterministic, so it is testable.
   wired up.
 - **The snapshot is not token-counted.** It is built to be compact (~40 lines
   with a busy picture) but nothing enforces the ~800-token target from CLAUDE.md.
+2026-07-28: Pushed feature/agent-retrieval to origin as backup; merge decision deferred.
